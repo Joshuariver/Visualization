@@ -1,0 +1,124 @@
+---
+title: "Jaesun의 레이더 차트"
+author: "Jaesun HA"
+format: html
+editor: visual
+---
+
+## Radar Chart 연습
+
+레이다 도표(Radar Chart)는 어떤 측정 목표에 대한 평가항목이 여러 개일 때 항목 수에 따라 원을 같은 간격으로 나누고, 중심으로부터 일정 간격으로 동심으로 척도를 재는 칸을 나누어 각 평가항목의 정량화된 점수에 따라 그 위치에 점을 찍고 평가항목간 점을 이어 선으로 만들어 항목 간 균형을 한눈에 볼 수 있도록 해주는 도표이다. 여러 측정 목표를 함께 겹쳐 놓아 비교하기에도 편리하다. 각 항목 간 비율뿐만 아니라 균형과 경향을 직관적으로 알 수 있어 편리하다.
+
+특히 신문, 잡지 등에서 많이 쓰이는데 예를 들어 여러 제품의 품질을 평가하기 위해 견고성, 사용편의성, 가격, 디자인, 고객서비스등의 항목을 두고 이를 10단계로 점수를 매기고 이를 레이다 도표로 만들어서 보면 각 제품의 장단점과 균형을 쉽게 알 수 있어서 편리하다.
+
+레이다의 표시장치와 닮아서 레이다 도표라고 하며 레이다 차트, 레이다 그래프 혹은 스파이더 차트라고도 한다.
+
+R에 내장된 연습용 데이터 중 자동차의 사양을 비교하는 데이터로 알려진 mpg 데이터셋을 활용해서 Radar Chart 를 연습해 보겠다.
+
+레이다 도표 작성에 사용하는 패키지인 ggradar 는 아직 CRAN에 업로드 되지 않았으므로, github에 등록된 개발자의 사이트에 접속해서 설치해야 한다. 물론 github 에 있는 패키지를 설치하려면 선행적으로 RTOOLS 의 최신버전과 devtools 패키지가 설치되어 있어야 한다.
+
+```{r}
+
+# devtools::install_github("ricardo-bion/ggradar", dependencies = TRUE)
+
+library(ggradar)
+library(tidyverse)
+library(tidyquant)
+library(scales)
+library(corrr)
+
+# DATA
+
+mpg
+```
+
+다음은 레이터 차트에 보여줄 데이터만 정리한 별도의 테이블을 만들어 보자. 이 테이블의 이름은 vehicle_summary_tbl 이라고 명명해 본다.
+
+```{r}
+
+# 보여줄 데이터 가공
+
+# 레이다 차트는 수치로 된 항목만 표시해 주므로, mpg 에서 수치인 컬럼만 먼저 도출해준다.
+
+vehicle_summary_tbl <- mpg %>%
+  select(class, displ, cyl, cty, hwy)
+
+
+# class 를 기준으로 displ (리터 기준의 엔진의 용량), cyl (실린더의 수), cty (갤런당 도시운행 기준 연비), hwy (갤런당 고속도로 운행 기준 연비)를 뽑는다.
+vehicle_summary_tbl <- vehicle_summary_tbl %>%
+           group_by(class) %>%
+           summarise(
+             across(displ:hwy, .fns = median)
+           ) %>%
+           ungroup()
+
+
+           
+# 최종 ggradar 를 위한 데이터를 정리한다. (비교를 위해 수치의 범위를 0-1 사이로 변경한다.)
+vehicle_summary_tbl <- vehicle_summary_tbl %>%
+           rename(group = class) %>%
+           mutate_at(vars(-group), rescale)
+         
+
+vehicle_summary_tbl
+
+
+
+```
+
+한글로 보여주기 위해 컬럼명을 한글로 변경한다.
+
+```{r}
+colnames(vehicle_summary_tbl) <- c("차종","배기량","실린더_수","도시연비","고속도로연비")
+```
+
+먼저 만들어진 테이블을 이용해서 간단한 ggradar 를 만들어 본다. 차종별 레이더 차트가 만들어 진다.
+
+```{r}
+vehicle_summary_tbl %>% ggradar()
+```
+
+몇 가지 옵션을 조정해 도표를 심플하게 만들어 보자.
+
+```{r}
+vehicle_summary_tbl %>%
+  ggradar(
+    group.colours = palette_light() %>% unname(),
+    group.point.size = 0,
+    group.line.width = 1,
+    plot.title = "차종에 따른 연비 비교",
+    fill = TRUE,
+    fill.alpha = 0.25
+  )
+```
+
+차종별로 분리해서 보여주기
+
+```{r}
+vehicle_summary_tbl%>%
+  ggradar(
+    group.colours = palette_light() %>% unname(),
+    fill = TRUE,
+    fill.alpha = 0.25,
+  ) +
+  
+  # Facet
+  facet_wrap(~ group, ncol = 3) +
+    
+  # Theme
+  theme_void() +
+    scale_color_tq() +
+    theme(
+      strip.text = element_text(
+        size = 12,
+        colour = "white",
+        margin = margin(t = 5, b = 5)
+      ),
+      strip.background = element_rect(fill = "#2C3E50"),
+      legend.position = "none",
+      plot.margin = margin(10,10,10,10)
+    ) +
+    
+    # Title
+    labs(title = "차종에 따른 연비 비교")
+```
