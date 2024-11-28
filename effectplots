@@ -1,0 +1,205 @@
+---
+title: "effectplots"
+output: html_notebook
+---
+
+{effectplots}는 모든 모델의 특성 효과를 계산하고 시각화하는 R 패키지입니다. {collapse} 덕분에 매우 빠릅니다.
+
+주요 함수인 feature_effects()는 특성 X에 대해 값/빈마다 이러한 통계를 처리합니다:
+
+평균 관측 y 값: 반응 y와 특성 간의 기술적 연관성.
+평균 예측: X와 다른 특성의 결합 효과 (M Plots, Apley [1]).
+부분 의존성 (Friedman [2]): 다른 특성을 고정한 상태에서 평균 예측이 X에 어떻게 반응하는지.
+누적 지역 효과 (Apley [1]): 부분 의존성의 대안.
+또한, 관측된 y와 잔차의 수, 가중치 합계, 평균 잔차 및 표준 편차를 계산합니다. 모든 통계는 선택적 사례 가중치를 존중합니다.
+
+특성 효과에 대한 더 많은 정보는 Christoph Molnar의 책 [3]을 강력히 추천합니다.
+
+정상적인 노트북에서 10개의 연속 특성에 대해 10백만 행의 모든 통계를 얻는 데 1초가 걸립니다 (+ 예측 시간).
+
+작업 흐름
+
+feature_effects() 또는 작은 도우미인 average_observed(), partial_dependence() 등을 통해 값을 처리합니다.
+update()로 결과를 업데이트합니다: 범주형 특성의 드문 수준을 결합하고, 중요도에 따라 결과를 정렬합니다.
+plot()으로 결과를 시각화합니다: ggplot2/patchwork와 plotly 중에서 선택합니다.
+
+#1. 설치
+```{r}
+# install.packages("pak")
+pak::pak("mayer79/effectplots", dependencies = TRUE)
+```
+#2. 사용례
+```{r}
+library(effectplots)
+library(OpenML)
+library(lightgbm)
+
+set.seed(1)
+
+df <- getOMLDataSet(data.id = 45106L)$data
+
+xvars <- c("year", "town", "driver_age", "car_weight", "car_power", "car_age")
+
+# 0.1s on laptop
+average_observed(df[xvars], y = df$claim_nb) |>
+  plot(share_y = "all")
+```
+
+#. Fit Model
+```{r}
+ix <- sample(nrow(df), 0.8 * nrow(df))
+train <- df[ix, ]
+test <- df[-ix, ]
+X_train <- data.matrix(train[xvars])
+X_test <- data.matrix(test[xvars])
+
+# Training, using slightly optimized parameters found via cross-validation
+params <- list(
+  learning_rate = 0.05,
+  objective = "poisson",
+  num_leaves = 7,
+  min_data_in_leaf = 50,
+  min_sum_hessian_in_leaf = 0.001,
+  colsample_bynode = 0.8,
+  bagging_fraction = 0.8,
+  lambda_l1 = 3,
+  lambda_l2 = 5,
+  num_threads = 7
+)
+
+fit <- lgb.train(
+  params = params,
+  data = lgb.Dataset(X_train, label = train$claim_nb),
+  nrounds = 300
+)
+```
+
+#. Inspect Model
+
+테스트 데이터에 대한 모든 통계를 처리해 보겠습니다. 정렬은 부분 의존성의 가중 분산에 따라 이루어지며, 이는 [4]와 관련된 주요 효과 중요성 측정입니다.
+
+평균 예측은 평균 관측값을 밀접하게 따릅니다. 즉, 모델이 잘 작동하는 것 같습니다. 부분 의존성/ALE와 평균 예측을 비교하면 효과가 주로 x축의 특성에서 오는지 아니면 다른 상관된 특성에서 오는지에 대한 통찰을 제공합니다.
+```{r}
+# 0.1s + 0.15s prediction time
+feature_effects(fit, v = xvars, data = X_test, y = test$claim_nb) |>
+  update(sort_by = "pd") |> 
+  plot()
+```
+
+#. Flexibility
+```{r}
+m_train <- feature_effects(fit, v = xvars, data = X_train, y = train$claim_nb)
+m_test <- feature_effects(fit, v = xvars, data = X_test, y = test$claim_nb)
+
+# Pick top 3 based on train
+m_train <- m_train |> 
+  update(sort_by = "pd") |> 
+  head(3)
+m_test <- m_test[names(m_train)]
+
+# Concatenate train and test results and plot them
+c(m_train, m_test) |> 
+  plot(
+    share_y = "rows",
+    ncol = 2,
+    byrow = FALSE,
+    stats = c("y_mean", "pred_mean"),
+    subplot_titles = FALSE,
+    # plotly = TRUE,
+    title = "Left: Train - Right: Test",
+  )
+```
+
+```{r}
+c(m_train, m_test) |> 
+  update(drop_below_n = 50) |> 
+  plot(
+    ylim = c(-0.07, 0.12),
+    ncol = 2,
+    byrow = FALSE,
+    stats = "resid_mean",
+    subplot_titles = FALSE,
+    title = "Left: Train - Right: Test",
+    # plotly = TRUE,
+    interval = "ci"
+  )
+```
+# DALEX
+```{r}
+library(effectplots)
+library(DALEX)
+library(ranger)
+
+set.seed(1)
+
+fit <- ranger(Sepal.Length ~ ., data = iris)
+ex <- DALEX::explain(fit, data = iris[, -1], y = iris[, 1])
+
+feature_effects(ex, breaks = 5) |> 
+  plot(share_y = "all")
+```
+
+# Tidymodels
+```{r}
+library(effectplots)
+library(tidymodels)
+
+set.seed(1)
+
+xvars <- c("carat", "color", "clarity", "cut")
+
+split <- initial_split(diamonds)
+train <- training(split)
+test <- testing(split)
+
+dia_recipe <- train |> 
+  recipe(reformulate(xvars, "price"))
+
+mod <- rand_forest(trees = 100) |>
+  set_engine("ranger") |> 
+  set_mode("regression")
+  
+dia_wf <- workflow() |>
+  add_recipe(dia_recipe) |>
+  add_model(mod)
+
+fit <- dia_wf |>
+  fit(train)
+
+M_train <- feature_effects(fit, v = xvars, data = train, y = "price")
+M_test <- feature_effects(fit, v = xvars, data = test, y = "price")
+
+plot(
+  M_train + M_test,
+  byrow = FALSE,
+  ncol = 2,
+  share_y = "rows",
+  rotate_x = rep(45 * xvars %in% c("clarity", "cut"), each = 2),
+  subplot_titles = FALSE,
+  # plotly = TRUE,
+  title = "Left: train - Right: test"
+)
+```
+# Probabilistic classification
+```{r}
+library(effectplots)
+library(ranger)
+
+set.seed(1)
+
+fit <- ranger(Species ~ ., data = iris, probability = TRUE)
+
+M <- partial_dependence(
+  fit,
+  v = colnames(iris[1:4]), 
+  data = iris,
+  which_pred = 1  # "setosa" is the first class
+)
+plot(M, bar_height = 0.33, ylim = c(0, 0.7))
+```
+# References
+
+1. Apley, Daniel W., and Jingyu Zhu. 2020. Visualizing the Effects of Predictor Variables in Black Box Supervised Learning Models. Journal of the Royal Statistical Society Series B: Statistical Methodology, 82 (4): 1059–1086. doi:10.1111/rssb.12377.
+2. Friedman, Jerome H. 2001. Greedy Function Approximation: A Gradient Boosting Machine. Annals of Statistics 29 (5): 1189–1232. doi:10.1214/aos/1013203451.
+3. Molnar, Christoph. 2019. Interpretable Machine Learning: A Guide for Making Black Box Models Explainable. https://christophm.github.io/interpretable-ml-book/.
+4. Greenwell, Brandon M., Bradley C. Boehmke, and Andrew J. McCarthy. 2018. A Simple and Effective Model-Based Variable Importance Measure. arXiv preprint. https://arxiv.org/abs/1805.04755.
